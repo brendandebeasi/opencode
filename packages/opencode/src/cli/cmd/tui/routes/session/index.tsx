@@ -82,6 +82,7 @@ import { formatTranscript } from "../../util/transcript"
 import { UI } from "@/cli/ui.ts"
 import { useTuiConfig } from "../../context/tui-config"
 import { FilePathLink } from "../../ui/link"
+import { TextWithLinks } from "../../ui/text-with-links"
 
 addDefaultParsers(parsers.parsers)
 
@@ -1446,6 +1447,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
+
   return (
     <Show when={props.part.text.trim()}>
       <box id={"text-" + props.part.id} paddingLeft={3} marginTop={1} flexShrink={0}>
@@ -1726,6 +1728,24 @@ function BlockTool(props: {
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
   const error = createMemo(() => (props.part?.state.status === "error" ? props.part.state.error : undefined))
+
+  // Wrap title in a fragment instead of text if it's already an element (like FilePathLink)
+  // to avoid nested text rendering issues which might break links
+  const titleContent = createMemo(() => {
+    if (typeof props.title === "string") {
+      return (
+        <text paddingLeft={3} fg={theme.textMuted}>
+          {props.title}
+        </text>
+      )
+    }
+    return (
+      <text paddingLeft={3} fg={theme.textMuted}>
+        {props.title}
+      </text>
+    )
+  })
+
   return (
     <box
       border={["left"]}
@@ -1744,15 +1764,10 @@ function BlockTool(props: {
         props.onClick?.()
       }}
     >
-      <Show
-        when={props.spinner}
-        fallback={
-          <text paddingLeft={3} fg={theme.textMuted}>
-            {props.title}
-          </text>
-        }
-      >
-        <Spinner color={theme.textMuted}>{props.title.replace(/^# /, "")}</Spinner>
+      <Show when={props.spinner} fallback={titleContent()}>
+        <Spinner color={theme.textMuted}>
+          {typeof props.title === "string" ? props.title.replace(/^# /, "") : ""}
+        </Spinner>
       </Show>
       {props.children}
       <Show when={error()}>
@@ -1812,7 +1827,7 @@ function Bash(props: ToolProps<typeof BashTool>) {
           <box gap={1}>
             <text fg={theme.text}>$ {props.input.command}</text>
             <Show when={output()}>
-              <text fg={theme.text}>{limited()}</text>
+              <TextWithLinks text={limited()} fg={theme.text} />
             </Show>
             <Show when={overflow()}>
               <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
