@@ -29,7 +29,15 @@ import {
   RGBA,
 } from "@opentui/core"
 import { Prompt, type PromptRef } from "@tui/component/prompt"
-import type { AssistantMessage, Part, ToolPart, UserMessage, TextPart, ReasoningPart } from "@opencode-ai/sdk/v2"
+import type {
+  AssistantMessage,
+  Part,
+  ToolPart,
+  UserMessage,
+  TextPart,
+  ReasoningPart,
+  FilePart,
+} from "@opencode-ai/sdk/v2"
 import { useLocal } from "@tui/context/local"
 import { Locale } from "@/util/locale"
 import type { Tool } from "@/tool/tool"
@@ -81,6 +89,7 @@ import { DialogExportOptions } from "../../ui/dialog-export-options"
 import { formatTranscript } from "../../util/transcript"
 import { UI } from "@/cli/ui.ts"
 import { useTuiConfig } from "../../context/tui-config"
+import { preprocessMarkdownLinks } from "../../ui/preprocess-markdown-links"
 
 addDefaultParsers(parsers.parsers)
 
@@ -1227,6 +1236,21 @@ const MIME_BADGE: Record<string, string> = {
   "application/x-directory": "dir",
 }
 
+function processUserMessageText(text: string | undefined, files: FilePart[]): string {
+  if (!text) return ""
+
+  let processed = text
+  for (const file of files) {
+    if (file.source?.type === "file" && file.source.path) {
+      const filename = file.source.path.split("/").pop() || file.source.path
+      const regex = new RegExp(`@${filename}\\b`, "g")
+      processed = processed.replace(regex, file.source.path)
+    }
+  }
+
+  return preprocessMarkdownLinks(processed)
+}
+
 function UserMessage(props: {
   message: UserMessage
   parts: Part[]
@@ -1239,7 +1263,7 @@ function UserMessage(props: {
   const text = createMemo(() => props.parts.flatMap((x) => (x.type === "text" && !x.synthetic ? [x] : []))[0])
   const files = createMemo(() => props.parts.flatMap((x) => (x.type === "file" ? [x] : [])))
   const sync = useSync()
-  const { theme } = useTheme()
+  const { theme, syntax } = useTheme()
   const [hover, setHover] = createSignal(false)
   const queued = createMemo(() => props.pending && props.message.id > props.pending)
   const color = createMemo(() => local.agent.color(props.message.agent))
@@ -1272,7 +1296,13 @@ function UserMessage(props: {
             backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
             flexShrink={0}
           >
-            <text fg={theme.text}>{text()?.text}</text>
+            <code
+              filetype="markdown"
+              drawUnstyledText={false}
+              syntaxStyle={syntax()}
+              content={processUserMessageText(text()?.text, files())}
+              fg={theme.text}
+            />
             <Show when={files().length}>
               <box flexDirection="row" paddingBottom={metadataVisible() ? 1 : 0} paddingTop={1} gap={1} flexWrap="wrap">
                 <For each={files()}>
@@ -1380,7 +1410,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           customBorderChars={SplitBorder.customBorderChars}
           borderColor={theme.error}
         >
-          <text fg={theme.textMuted}>{props.message.error?.data.message}</text>
+          <text fg={theme.textMuted}>{String(props.message.error?.data.message || "")}</text>
         </box>
       </Show>
       <Switch>
@@ -1427,6 +1457,11 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     // OpenRouter sends encrypted reasoning data that appears as [REDACTED]
     return props.part.text.replace("[REDACTED]", "").trim()
   })
+
+  const processedContent = createMemo(() => {
+    return preprocessMarkdownLinks("_Thinking:_ " + content())
+  })
+
   return (
     <Show when={content() && ctx.showThinking()}>
       <box
@@ -1443,7 +1478,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
           drawUnstyledText={false}
           streaming={true}
           syntaxStyle={subtleSyntax()}
-          content={"_Thinking:_ " + content()}
+          content={processedContent()}
           conceal={ctx.conceal()}
           fg={theme.textMuted}
         />
@@ -1455,6 +1490,11 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
+
+  const processedContent = createMemo(() => {
+    return preprocessMarkdownLinks(props.part.text.trim())
+  })
+
   return (
     <Show when={props.part.text.trim()}>
       <box id={"text-" + props.part.id} paddingLeft={3} marginTop={1} flexShrink={0}>
@@ -1463,7 +1503,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
             <markdown
               syntaxStyle={syntax()}
               streaming={true}
-              content={props.part.text.trim()}
+              content={processedContent()}
               conceal={ctx.conceal()}
             />
           </Match>
@@ -1473,7 +1513,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
               drawUnstyledText={false}
               streaming={true}
               syntaxStyle={syntax()}
-              content={props.part.text.trim()}
+              content={processedContent()}
               conceal={ctx.conceal()}
               fg={theme.text}
             />
@@ -1779,9 +1819,31 @@ function Bash(props: ToolProps<typeof BashTool>) {
   const [expanded, setExpanded] = createSignal(false)
   const lines = createMemo(() => output().split("\n"))
   const overflow = createMemo(() => lines().length > 10)
-  const limited = createMemo(() => {
-    if (expanded() || !overflow()) return output()
-    return [...lines().slice(0, 10), "…"].join("\n")
+
+  const contextualOutput = createMemo(() => {
+    const text = expanded() || !overflow() ? output() : [...lines().slice(0, 10), "…"].join("\n")
+
+    const command = props.input.command || ""
+    const lsMatch = command.match(/\bls\b.*?\s+([^\s]+\/?)$/)
+    const cdMatch = command.match(/\bcd\s+([^\s]+)/)
+    const directory = lsMatch?.[1] || cdMatch?.[1] || ""
+
+    if (directory && (command.includes("ls") || command.includes("dir"))) {
+      return text
+        .split("\n")
+        .map((line) => {
+          const fileMatch = line.match(/^[-drwx@]+\s+\d+\s+\w+\s+\w+\s+[\d,]+\s+\w+\s+\d+\s+[\d:]+\s+(.+)$/)
+          if (fileMatch && fileMatch[1] && fileMatch[1] !== "." && fileMatch[1] !== "..") {
+            const filename = fileMatch[1]
+            const fullPath = directory.endsWith("/") ? directory + filename : directory + "/" + filename
+            return line.replace(filename, fullPath)
+          }
+          return line
+        })
+        .join("\n")
+    }
+
+    return text
   })
 
   const workdirDisplay = createMemo(() => {
@@ -1820,9 +1882,7 @@ function Bash(props: ToolProps<typeof BashTool>) {
         >
           <box gap={1}>
             <text fg={theme.text}>$ {props.input.command}</text>
-            <Show when={output()}>
-              <text fg={theme.text}>{limited()}</text>
-            </Show>
+            <text fg={theme.text}>{contextualOutput()}</text>
             <Show when={overflow()}>
               <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
             </Show>
