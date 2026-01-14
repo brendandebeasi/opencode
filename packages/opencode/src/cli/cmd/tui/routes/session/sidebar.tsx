@@ -253,6 +253,10 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                         if (!rest) return last
                         return Locale.truncateMiddle(rest, 30 - last.length) + "/" + last
                       })
+                      const absolutePath = createMemo(() => {
+                        // Git diff paths are relative to repo root, which should be the directory
+                        return path.isAbsolute(item.file) ? item.file : path.join(directory(), item.file)
+                      })
                       return (
                         <box flexDirection="row" gap={1} justifyContent="space-between">
                           <text fg={theme.textMuted} wrapMode="char">
