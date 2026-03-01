@@ -15,6 +15,7 @@ export function TextWithLinks(props: { text: string; fg?: RGBA }) {
     let lastIndex = 0
     let match
 
+    PATH_REGEX.lastIndex = 0
     while ((match = PATH_REGEX.exec(text)) !== null) {
       if (match.index > lastIndex) {
         result.push({ type: "text", content: text.slice(lastIndex, match.index) })
@@ -26,6 +27,7 @@ export function TextWithLinks(props: { text: string; fg?: RGBA }) {
       if (content.startsWith("**") && content.endsWith("**")) {
         result.push({ type: "bold", content: content.slice(2, -2) })
       } else if (content.startsWith("_") && content.endsWith("_")) {
+        // TUI might not support italic widely, but we can try or use another style
         result.push({ type: "italic", content: content.slice(1, -1) })
       } else if (content.startsWith("`") && content.endsWith("`")) {
         // For code spans, we strip backticks.
@@ -84,7 +86,6 @@ export function TextWithLinks(props: { text: string; fg?: RGBA }) {
             return <span style={{ bold: true }}>{part.content}</span>
           }
           if (part.type === "italic") {
-            // TUI might not support italic widely, but we can try or use another style
             return <span style={{ italic: true }}>{part.content}</span>
           }
           if (part.type === "code") {

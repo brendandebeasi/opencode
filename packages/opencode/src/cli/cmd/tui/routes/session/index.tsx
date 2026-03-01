@@ -1729,22 +1729,11 @@ function BlockTool(props: {
   const [hover, setHover] = createSignal(false)
   const error = createMemo(() => (props.part?.state.status === "error" ? props.part.state.error : undefined))
 
-  // Wrap title in a fragment instead of text if it's already an element (like FilePathLink)
-  // to avoid nested text rendering issues which might break links
-  const titleContent = createMemo(() => {
-    if (typeof props.title === "string") {
-      return (
-        <text paddingLeft={3} fg={theme.textMuted}>
-          {props.title}
-        </text>
-      )
-    }
-    return (
-      <text paddingLeft={3} fg={theme.textMuted}>
-        {props.title}
-      </text>
-    )
-  })
+  const titleContent = createMemo(() => (
+    <text paddingLeft={3} fg={theme.textMuted}>
+      {props.title}
+    </text>
+  ))
 
   return (
     <box
