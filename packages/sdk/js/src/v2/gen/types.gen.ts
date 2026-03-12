@@ -1179,6 +1179,7 @@ export type ProviderConfig = {
         context: number
         input?: number
         output: number
+        tools?: number
       }
       modalities?: {
         input: Array<"text" | "audio" | "image" | "video" | "pdf">
@@ -1597,6 +1598,7 @@ export type Model = {
     context: number
     input?: number
     output: number
+    tools?: number
   }
   status: "alpha" | "beta" | "deprecated" | "active"
   options: {
@@ -3917,6 +3919,7 @@ export type ProviderListResponses = {
             context: number
             input?: number
             output: number
+            tools?: number
           }
           modalities?: {
             input: Array<"text" | "audio" | "image" | "video" | "pdf">
