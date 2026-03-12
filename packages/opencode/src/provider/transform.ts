@@ -1008,9 +1008,10 @@ export namespace ProviderTransform {
     }
 
     // xAI grammar compiler rejects several JSON Schema keywords that Zod v4 emits
+    // and has a hard limit on combined grammar complexity across all tools.
     // ref: github.com/zed-industries/zed/pull/33593, github.com/vercel/ai/issues/8024
     if (model.api.npm === "@ai-sdk/xai" || model.id?.toLowerCase().includes("grok")) {
-      const unsupported = new Set([
+      const strip = new Set([
         "minimum",
         "maximum",
         "exclusiveMinimum",
@@ -1022,20 +1023,42 @@ export namespace ProviderTransform {
         "minContains",
         "maxContains",
         "format",
+        "$schema",
+        "default",
+        "examples",
+        "title",
+        "pattern",
+        "patternProperties",
+        "uniqueItems",
       ])
-      const sanitizeXai = (node: Record<string, unknown>): Record<string, unknown> => {
+      const isObj = (v: unknown): v is Record<string, unknown> =>
+        typeof v === "object" && v !== null && !Array.isArray(v)
+
+      // collapse anyOf/oneOf with a single non-null branch into the branch itself
+      const flatten = (node: Record<string, unknown>): Record<string, unknown> => {
+        for (const combiner of ["anyOf", "oneOf"] as const) {
+          const branches = node[combiner]
+          if (!Array.isArray(branches)) continue
+          const real = branches.filter((b) => !(isObj(b) && Object.keys(b).length === 1 && b.type === "null"))
+          if (real.length === 1 && isObj(real[0])) {
+            const { [combiner]: _, ...rest } = node
+            return { ...rest, ...real[0] }
+          }
+        }
+        return node
+      }
+
+      const sanitizeXai = (node: Record<string, unknown>, depth = 0): Record<string, unknown> => {
+        const flat = flatten(node)
         const result: Record<string, unknown> = {}
-        for (const [key, value] of Object.entries(node)) {
-          if (unsupported.has(key)) continue
+        for (const [key, value] of Object.entries(flat)) {
+          if (strip.has(key)) continue
           if (key === "additionalProperties" && typeof value === "boolean") continue
+          if (key === "description" && depth > 0) continue
           if (Array.isArray(value)) {
-            result[key] = value.map((item) =>
-              typeof item === "object" && item !== null && !Array.isArray(item)
-                ? sanitizeXai(item as Record<string, unknown>)
-                : item,
-            )
-          } else if (typeof value === "object" && value !== null) {
-            result[key] = sanitizeXai(value as Record<string, unknown>)
+            result[key] = value.map((item) => (isObj(item) ? sanitizeXai(item, depth + 1) : item))
+          } else if (isObj(value)) {
+            result[key] = sanitizeXai(value, depth + 1)
           } else {
             result[key] = value
           }
