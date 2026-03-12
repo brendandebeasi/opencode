@@ -4521,6 +4521,9 @@
                                     },
                                     "output": {
                                       "type": "number"
+                                    },
+                                    "tools": {
+                                      "type": "number"
                                     }
                                   },
                                   "required": ["context", "output"]
@@ -8679,6 +8682,12 @@
               "sessionID": {
                 "type": "string",
                 "pattern": "^ses.*"
+              },
+              "agent": {
+                "type": "string"
+              },
+              "modelID": {
+                "type": "string"
               }
             },
             "required": ["sessionID"]
@@ -10071,6 +10080,9 @@
                     },
                     "output": {
                       "type": "number"
+                    },
+                    "tools": {
+                      "type": "number"
                     }
                   },
                   "required": ["context", "output"]
@@ -11000,6 +11012,9 @@
                 "type": "number"
               },
               "output": {
+                "type": "number"
+              },
+              "tools": {
                 "type": "number"
               }
             },
