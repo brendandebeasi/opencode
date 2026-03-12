@@ -4,7 +4,21 @@ Use this tool when you need to ask the user questions during execution. This all
 3. Get decisions on implementation choices as you work
 4. Offer choices to the user about what direction to take.
 
+IMPORTANT: The questions parameter must be an ARRAY of question objects, not a string.
+
+Example usage:
+questions: [{
+  question: "Which framework would you like to use?",
+  header: "Framework",
+  options: [
+    { label: "React (Recommended)", description: "Popular UI library with large ecosystem" },
+    { label: "Vue", description: "Progressive framework with gentle learning curve" },
+    { label: "Angular", description: "Full-featured framework with built-in tools" }
+  ]
+}]
+
 Usage notes:
+- Each question object must have: question (string), header (max 12 chars), options (array)
 - When `custom` is enabled (default), a "Type your own answer" option is added automatically; don't include "Other" or catch-all options
 - Answers are returned as arrays of labels; set `multiple: true` to allow selecting more than one
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label

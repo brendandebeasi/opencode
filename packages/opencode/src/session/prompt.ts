@@ -255,8 +255,8 @@ export namespace SessionPrompt {
     return s[sessionID].abort.signal
   }
 
-  export function cancel(sessionID: SessionID) {
-    log.info("cancel", { sessionID })
+  export function cancel(sessionID: SessionID, metadata?: { agent?: string; modelID?: string }) {
+    log.info("cancel", { sessionID, metadata })
     const s = state()
     const match = s[sessionID]
     if (!match) {
@@ -265,7 +265,7 @@ export namespace SessionPrompt {
     }
     match.abort.abort()
     delete s[sessionID]
-    SessionStatus.set(sessionID, { type: "idle" })
+    SessionStatus.set(sessionID, { type: "idle" }, metadata)
     return
   }
 
@@ -284,7 +284,8 @@ export namespace SessionPrompt {
       })
     }
 
-    using _ = defer(() => cancel(sessionID))
+    let lastAssistantData: { agent?: string; modelID?: string } = {}
+    using _ = defer(() => cancel(sessionID, lastAssistantData))
 
     // Structured output state
     // Note: On session resumption, state is reset but outputFormat is preserved
@@ -306,7 +307,13 @@ export namespace SessionPrompt {
       for (let i = msgs.length - 1; i >= 0; i--) {
         const msg = msgs[i]
         if (!lastUser && msg.info.role === "user") lastUser = msg.info as MessageV2.User
-        if (!lastAssistant && msg.info.role === "assistant") lastAssistant = msg.info as MessageV2.Assistant
+        if (!lastAssistant && msg.info.role === "assistant") {
+          lastAssistant = msg.info as MessageV2.Assistant
+          lastAssistantData = {
+            agent: lastAssistant.agent,
+            modelID: lastAssistant.modelID,
+          }
+        }
         if (!lastFinished && msg.info.role === "assistant" && msg.info.finish)
           lastFinished = msg.info as MessageV2.Assistant
         if (lastUser && lastFinished) break

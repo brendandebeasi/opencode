@@ -8679,6 +8679,12 @@
               "sessionID": {
                 "type": "string",
                 "pattern": "^ses.*"
+              },
+              "agent": {
+                "type": "string"
+              },
+              "modelID": {
+                "type": "string"
               }
             },
             "required": ["sessionID"]

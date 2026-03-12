@@ -604,6 +604,8 @@ export type EventSessionIdle = {
   type: "session.idle"
   properties: {
     sessionID: string
+    agent?: string
+    modelID?: string
   }
 }
 

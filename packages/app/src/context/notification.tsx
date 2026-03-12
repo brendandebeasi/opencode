@@ -10,7 +10,7 @@ import { useSettings } from "@/context/settings"
 import { Binary } from "@opencode-ai/util/binary"
 import { base64Encode } from "@opencode-ai/util/encode"
 import { decode64 } from "@/utils/base64"
-import { EventSessionError } from "@opencode-ai/sdk/v2"
+import { EventSessionError, EventSessionIdle } from "@opencode-ai/sdk/v2"
 import { Persist, persisted } from "@/utils/persist"
 import { playSound, soundSrc } from "@/utils/sound"
 
@@ -226,8 +226,10 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
       return sessionID === activeSession
     }
 
-    const handleSessionIdle = (directory: string, event: { properties: { sessionID?: string } }, time: number) => {
+    const handleSessionIdle = (directory: string, event: EventSessionIdle, time: number) => {
       const sessionID = event.properties.sessionID
+      const agent = event.properties.agent
+      const modelID = event.properties.modelID
       void lookup(directory, sessionID).then((session) => {
         if (meta.disposed) return
         if (!session) return
@@ -243,11 +245,13 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
           viewed: viewedInCurrentSession(directory, sessionID),
           type: "turn-complete",
           session: sessionID,
+          metadata: { agent, modelID },
         })
 
         const href = `/${base64Encode(directory)}/session/${sessionID}`
         if (settings.notifications.agent()) {
-          void platform.notify(language.t("notification.session.responseReady.title"), session.title ?? sessionID, href)
+          const title = agent ? `${agent} finished` : language.t("notification.session.responseReady.title")
+          void platform.notify(title, session.title ?? sessionID, href)
         }
       })
     }

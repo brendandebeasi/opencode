@@ -38,6 +38,8 @@ export namespace SessionStatus {
       "session.idle",
       z.object({
         sessionID: SessionID.zod,
+        agent: z.string().optional(),
+        modelID: z.string().optional(),
       }),
     ),
   }
@@ -59,7 +61,7 @@ export namespace SessionStatus {
     return state()
   }
 
-  export function set(sessionID: SessionID, status: Info) {
+  export function set(sessionID: SessionID, status: Info, metadata?: { agent?: string; modelID?: string }) {
     Bus.publish(Event.Status, {
       sessionID,
       status,
@@ -68,6 +70,8 @@ export namespace SessionStatus {
       // deprecated
       Bus.publish(Event.Idle, {
         sessionID,
+        agent: metadata?.agent,
+        modelID: metadata?.modelID,
       })
       delete state()[sessionID]
       return
