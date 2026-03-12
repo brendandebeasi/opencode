@@ -1007,6 +1007,44 @@ export namespace ProviderTransform {
       schema = sanitizeGemini(schema)
     }
 
+    // xAI grammar compiler rejects several JSON Schema keywords that Zod v4 emits
+    // ref: github.com/zed-industries/zed/pull/33593, github.com/vercel/ai/issues/8024
+    if (model.api.npm === "@ai-sdk/xai" || model.id?.toLowerCase().includes("grok")) {
+      const unsupported = new Set([
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "minContains",
+        "maxContains",
+        "format",
+      ])
+      const sanitizeXai = (node: Record<string, unknown>): Record<string, unknown> => {
+        const result: Record<string, unknown> = {}
+        for (const [key, value] of Object.entries(node)) {
+          if (unsupported.has(key)) continue
+          if (key === "additionalProperties" && typeof value === "boolean") continue
+          if (Array.isArray(value)) {
+            result[key] = value.map((item) =>
+              typeof item === "object" && item !== null && !Array.isArray(item)
+                ? sanitizeXai(item as Record<string, unknown>)
+                : item,
+            )
+          } else if (typeof value === "object" && value !== null) {
+            result[key] = sanitizeXai(value as Record<string, unknown>)
+          } else {
+            result[key] = value
+          }
+        }
+        return result
+      }
+      schema = sanitizeXai(schema as Record<string, unknown>) as JSONSchema7
+    }
+
     return schema as JSONSchema7
   }
 }
