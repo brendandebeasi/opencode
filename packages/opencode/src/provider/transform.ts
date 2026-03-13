@@ -1007,6 +1007,121 @@ export namespace ProviderTransform {
       schema = sanitizeGemini(schema)
     }
 
+    // xAI grammar compiler rejects several JSON Schema keywords that Zod v4 emits
+    // and has a hard limit on combined grammar complexity across all tools.
+    // With 100+ MCP tools (Notion, Atlassian, Google Workspace etc.), the combined
+    // grammar easily exceeds Grok 4's complexity budget.  We aggressively simplify:
+    // depth-cap at 3, strip ALL enums/descriptions, collapse wide objects.
+    // ref: github.com/zed-industries/zed/pull/33593, github.com/vercel/ai/issues/8024
+    if (model.api.npm === "@ai-sdk/xai" || model.id?.toLowerCase().includes("grok")) {
+      const strip = new Set([
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "minContains",
+        "maxContains",
+        "format",
+        "$schema",
+        "default",
+        "examples",
+        "title",
+        "description",
+        "pattern",
+        "patternProperties",
+        "uniqueItems",
+        "const",
+        "$comment",
+        "contentEncoding",
+        "contentMediaType",
+        "if",
+        "then",
+        "else",
+        "dependentRequired",
+        "dependentSchemas",
+      ])
+      const isObj = (v: unknown): v is Record<string, unknown> =>
+        typeof v === "object" && v !== null && !Array.isArray(v)
+
+      const flatten = (node: Record<string, unknown>): Record<string, unknown> => {
+        if (Array.isArray(node.allOf)) {
+          const { allOf: branches, ...rest } = node
+          let merged = { ...rest }
+          for (const branch of branches as unknown[]) {
+            if (!isObj(branch)) continue
+            const prev = merged.properties
+            merged = { ...merged, ...branch }
+            if (isObj(prev) && isObj(branch.properties))
+              merged.properties = { ...prev, ...(branch.properties as Record<string, unknown>) }
+          }
+          return merged
+        }
+        // anyOf/oneOf: collapse to first non-null branch
+        for (const combiner of ["anyOf", "oneOf"] as const) {
+          const branches = node[combiner]
+          if (!Array.isArray(branches)) continue
+          const real = branches.filter((b) => !(isObj(b) && Object.keys(b).length === 1 && b.type === "null"))
+          if (real.length >= 1 && isObj(real[0])) {
+            const { [combiner]: _, ...rest } = node
+            return { ...rest, ...real[0] }
+          }
+        }
+        return node
+      }
+
+      const maxDepth = 3
+      const maxProps = 12
+      const sanitizeXai = (node: Record<string, unknown>, depth = 0): Record<string, unknown> => {
+        if (depth >= maxDepth) return { type: (node.type as string) ?? "object" }
+        const flat = flatten(node)
+        const result: Record<string, unknown> = {}
+        for (const [key, value] of Object.entries(flat)) {
+          if (strip.has(key)) continue
+          if (key === "additionalProperties") continue
+          if (key === "required" && depth > 0) continue
+          if (key === "type" && value === "integer") {
+            result[key] = "number"
+            continue
+          }
+          if (key === "enum" && Array.isArray(value)) {
+            const first = value[0]
+            result.type = typeof first === "number" ? "number" : "string"
+            continue
+          }
+          if (key === "properties" && isObj(value)) {
+            const entries = Object.entries(value)
+            if (entries.length > maxProps) {
+              result[key] = Object.fromEntries(
+                entries
+                  .slice(0, maxProps)
+                  .map(([pk, pv]) => [pk, isObj(pv) ? sanitizeXai(pv as Record<string, unknown>, depth + 1) : pv]),
+              )
+              continue
+            }
+            const props: Record<string, unknown> = {}
+            for (const [pk, pv] of entries) {
+              props[pk] = isObj(pv) ? sanitizeXai(pv as Record<string, unknown>, depth + 1) : pv
+            }
+            result[key] = props
+            continue
+          }
+          if (Array.isArray(value)) {
+            result[key] = value.map((item) => (isObj(item) ? sanitizeXai(item, depth + 1) : item))
+          } else if (isObj(value)) {
+            result[key] = sanitizeXai(value, depth + 1)
+          } else {
+            result[key] = value
+          }
+        }
+        return result
+      }
+      schema = sanitizeXai(schema as Record<string, unknown>) as JSONSchema7
+    }
+
     return schema as JSONSchema7
   }
 }
