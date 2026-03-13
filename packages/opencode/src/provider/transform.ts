@@ -1011,7 +1011,7 @@ export namespace ProviderTransform {
     // and has a hard limit on combined grammar complexity across all tools.
     // With 100+ MCP tools (Notion, Atlassian, Google Workspace etc.), the combined
     // grammar easily exceeds Grok 4's complexity budget.  We aggressively simplify:
-    // depth-cap at 3, strip ALL enums/descriptions, collapse wide objects.
+    // depth-cap at 2, nuke ALL unions/enums/descriptions, collapse wide objects.
     // ref: github.com/zed-industries/zed/pull/33593, github.com/vercel/ai/issues/8024
     if (model.api.npm === "@ai-sdk/xai" || model.id?.toLowerCase().includes("grok")) {
       const strip = new Set([
@@ -1043,11 +1043,28 @@ export namespace ProviderTransform {
         "else",
         "dependentRequired",
         "dependentSchemas",
+        "$ref",
+        "$defs",
+        "definitions",
       ])
       const isObj = (v: unknown): v is Record<string, unknown> =>
         typeof v === "object" && v !== null && !Array.isArray(v)
 
-      const flatten = (node: Record<string, unknown>): Record<string, unknown> => {
+      // Infer the simplest type from a union branch or node
+      const bareType = (node: Record<string, unknown>): string => {
+        const t = node.type
+        if (typeof t === "string") return t === "integer" ? "number" : t
+        if (Array.isArray(t)) {
+          const real = (t as string[]).filter((v) => v !== "null")
+          if (real.length === 1) return real[0] === "integer" ? "number" : real[0]!
+        }
+        if (node.properties || node.additionalProperties) return "object"
+        if (node.items) return "array"
+        return "string"
+      }
+
+      // Collapse allOf by merging, anyOf/oneOf by extracting bare type
+      const collapse = (node: Record<string, unknown>): Record<string, unknown> => {
         if (Array.isArray(node.allOf)) {
           const { allOf: branches, ...rest } = node
           let merged = { ...rest }
@@ -1060,58 +1077,62 @@ export namespace ProviderTransform {
           }
           return merged
         }
-        // anyOf/oneOf: collapse to first non-null branch
         for (const combiner of ["anyOf", "oneOf"] as const) {
           const branches = node[combiner]
           if (!Array.isArray(branches)) continue
           const real = branches.filter((b) => !(isObj(b) && Object.keys(b).length === 1 && b.type === "null"))
-          if (real.length >= 1 && isObj(real[0])) {
-            const { [combiner]: _, ...rest } = node
-            return { ...rest, ...real[0] }
-          }
+          if (real.length === 0) return { type: "string" }
+          const first = real[0]
+          if (!isObj(first)) return { type: "string" }
+          // Extract just the type — don't carry the branch's nested schema
+          const { [combiner]: _, ...rest } = node
+          return { ...rest, type: bareType(first) }
         }
         return node
       }
 
-      const maxDepth = 3
-      const maxProps = 12
+      const maxDepth = 2
+      const maxProps = 6
       const sanitizeXai = (node: Record<string, unknown>, depth = 0): Record<string, unknown> => {
-        if (depth >= maxDepth) return { type: (node.type as string) ?? "object" }
-        const flat = flatten(node)
+        if (depth >= maxDepth) return { type: bareType(node) }
+        const flat = collapse(node)
         const result: Record<string, unknown> = {}
         for (const [key, value] of Object.entries(flat)) {
           if (strip.has(key)) continue
           if (key === "additionalProperties") continue
-          if (key === "required" && depth > 0) continue
+          if (key === "required") continue
           if (key === "type" && value === "integer") {
             result[key] = "number"
             continue
           }
           if (key === "enum" && Array.isArray(value)) {
-            const first = value[0]
-            result.type = typeof first === "number" ? "number" : "string"
+            result.type = typeof value[0] === "number" ? "number" : "string"
             continue
           }
           if (key === "properties" && isObj(value)) {
-            const entries = Object.entries(value)
-            if (entries.length > maxProps) {
-              result[key] = Object.fromEntries(
-                entries
-                  .slice(0, maxProps)
-                  .map(([pk, pv]) => [pk, isObj(pv) ? sanitizeXai(pv as Record<string, unknown>, depth + 1) : pv]),
-              )
-              continue
-            }
+            const entries = Object.entries(value).slice(0, maxProps)
             const props: Record<string, unknown> = {}
             for (const [pk, pv] of entries) {
+              if (Array.isArray(pv)) continue
               props[pk] = isObj(pv) ? sanitizeXai(pv as Record<string, unknown>, depth + 1) : pv
             }
             result[key] = props
             continue
           }
+          if (key === "items") {
+            if (depth >= 1) {
+              // At depth 1+, array items become bare type to prevent grammar explosion
+              result[key] = isObj(value) ? { type: bareType(value) } : value
+            } else {
+              result[key] = isObj(value) ? sanitizeXai(value, depth + 1) : value
+            }
+            continue
+          }
           if (Array.isArray(value)) {
-            result[key] = value.map((item) => (isObj(item) ? sanitizeXai(item, depth + 1) : item))
-          } else if (isObj(value)) {
+            // Don't recurse into arrays of schemas — they generate combinatorial grammar
+            continue
+          }
+          if (isObj(value)) {
             result[key] = sanitizeXai(value, depth + 1)
           } else {
             result[key] = value

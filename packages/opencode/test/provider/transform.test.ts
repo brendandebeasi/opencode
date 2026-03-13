@@ -771,7 +771,7 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
     expect(result.properties.strict.additionalProperties).toBeUndefined()
   })
 
-  test("strips required arrays at depth > 0", () => {
+  test("strips required arrays at all depths", () => {
     const schema = {
       type: "object",
       required: ["name"],
@@ -787,7 +787,7 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
       },
     } as any
     const result = ProviderTransform.schema(xai, schema) as any
-    expect(result.required).toEqual(["name"])
+    expect(result.required).toBeUndefined()
     expect(result.properties.nested.required).toBeUndefined()
   })
 
@@ -809,7 +809,7 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
     expect(result.properties.nums.type).toBe("number")
   })
 
-  test("truncates objects beyond max depth of 3", () => {
+  test("truncates objects beyond max depth of 2", () => {
     const schema = {
       type: "object",
       properties: {
@@ -832,8 +832,8 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
       },
     } as any
     const result = ProviderTransform.schema(xai, schema) as any
-    // depth 0 = root, 1 = a, 2 = b, 3 = truncated
-    expect(result.properties.a.properties.b.properties.c).toEqual({ type: "object" })
+    // depth 0 = root, 1 = a, 2 = truncated to bare type
+    expect(result.properties.a.properties.b).toEqual({ type: "object" })
   })
 
   test("flattens allOf by merging sub-schemas", () => {
@@ -878,7 +878,7 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
     expect(result.properties.name.description).toBeUndefined()
   })
 
-  test("batch tool passthrough schema has no additionalProperties", () => {
+  test("batch tool passthrough schema strips additionalProperties and simplifies deep items", () => {
     const schema = {
       type: "object",
       properties: {
@@ -895,9 +895,9 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
       },
     } as any
     const result = ProviderTransform.schema(xai, schema) as any
-    const params = result.properties.tool_calls.items.properties.parameters
-    expect(params.additionalProperties).toBeUndefined()
-    expect(params.type).toBe("object")
+    // tool_calls is at depth 1, so items becomes bare type
+    expect(result.properties.tool_calls.type).toBe("array")
+    expect(result.properties.tool_calls.items).toEqual({ type: "object" })
   })
 
   test("collapses wide objects to first maxProps entries", () => {
@@ -906,9 +906,9 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
     const schema = { type: "object", properties: props } as any
     const result = ProviderTransform.schema(xai, schema) as any
     const keys = Object.keys(result.properties)
-    expect(keys.length).toBe(12)
+    expect(keys.length).toBe(6)
     expect(keys[0]).toBe("field0")
-    expect(keys[11]).toBe("field11")
+    expect(keys[5]).toBe("field5")
   })
 
   test("handles complex MCP-like schema with deep nesting and unions", () => {
@@ -964,10 +964,9 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
     expect(result.properties.filter.properties.operator.type).toBe("string")
     expect(result.properties.filter.properties.operator.enum).toBeUndefined()
     expect(result.properties.filter.properties.extra.type).toBe("boolean")
-    // depth 0=root, 1=filter, 2=filters, items array recurses at 3 → truncated
+    // depth 0=root, 1=filter — filters enters sanitizeXai at depth 2, hits maxDepth → bare type
     const filters = result.properties.filter.properties.filters
-    expect(filters.type).toBe("array")
-    expect(filters.items).toEqual({ type: "object" })
+    expect(filters).toEqual({ type: "array" })
   })
 
   test("does not affect non-xai providers", () => {
