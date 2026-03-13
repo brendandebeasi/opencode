@@ -1030,17 +1030,35 @@ export namespace ProviderTransform {
         "pattern",
         "patternProperties",
         "uniqueItems",
+        "const",
+        "$comment",
+        "contentEncoding",
+        "contentMediaType",
+        "if",
+        "then",
+        "else",
+        "dependentRequired",
+        "dependentSchemas",
       ])
       const isObj = (v: unknown): v is Record<string, unknown> =>
         typeof v === "object" && v !== null && !Array.isArray(v)
 
-      // collapse anyOf/oneOf with a single non-null branch into the branch itself
       const flatten = (node: Record<string, unknown>): Record<string, unknown> => {
+        // allOf: merge all sub-schemas into one (lossy)
+        if (Array.isArray(node.allOf)) {
+          const { allOf: branches, ...rest } = node
+          let merged = { ...rest }
+          for (const branch of branches as unknown[]) {
+            if (isObj(branch)) merged = { ...merged, ...branch }
+          }
+          return merged
+        }
+        // anyOf/oneOf: collapse to first non-null branch
         for (const combiner of ["anyOf", "oneOf"] as const) {
           const branches = node[combiner]
           if (!Array.isArray(branches)) continue
           const real = branches.filter((b) => !(isObj(b) && Object.keys(b).length === 1 && b.type === "null"))
-          if (real.length === 1 && isObj(real[0])) {
+          if (real.length >= 1 && isObj(real[0])) {
             const { [combiner]: _, ...rest } = node
             return { ...rest, ...real[0] }
           }
@@ -1055,6 +1073,10 @@ export namespace ProviderTransform {
           if (strip.has(key)) continue
           if (key === "additionalProperties" && typeof value === "boolean") continue
           if (key === "description" && depth > 0) continue
+          if (key === "type" && value === "integer") {
+            result[key] = "number"
+            continue
+          }
           if (Array.isArray(value)) {
             result[key] = value.map((item) => (isObj(item) ? sanitizeXai(item, depth + 1) : item))
           } else if (isObj(value)) {
