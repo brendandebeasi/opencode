@@ -1009,6 +1009,9 @@ export namespace ProviderTransform {
 
     // xAI grammar compiler rejects several JSON Schema keywords that Zod v4 emits
     // and has a hard limit on combined grammar complexity across all tools.
+    // With 100+ MCP tools (Notion, Atlassian, Google Workspace etc.), the combined
+    // grammar easily exceeds Grok 4's complexity budget.  We aggressively simplify:
+    // depth-cap at 3, strip ALL enums/descriptions, collapse wide objects.
     // ref: github.com/zed-industries/zed/pull/33593, github.com/vercel/ai/issues/8024
     if (model.api.npm === "@ai-sdk/xai" || model.id?.toLowerCase().includes("grok")) {
       const strip = new Set([
@@ -1027,6 +1030,7 @@ export namespace ProviderTransform {
         "default",
         "examples",
         "title",
+        "description",
         "pattern",
         "patternProperties",
         "uniqueItems",
@@ -1069,32 +1073,37 @@ export namespace ProviderTransform {
         return node
       }
 
-      const maxDepth = 4
+      const maxDepth = 3
+      const maxProps = 12
       const sanitizeXai = (node: Record<string, unknown>, depth = 0): Record<string, unknown> => {
-        if (depth >= maxDepth && node.type === "object") return { type: "object" }
+        if (depth >= maxDepth) return { type: (node.type as string) ?? "object" }
         const flat = flatten(node)
         const result: Record<string, unknown> = {}
         for (const [key, value] of Object.entries(flat)) {
           if (strip.has(key)) continue
-          // additionalProperties in any form creates unbounded BNF grammar rules
           if (key === "additionalProperties") continue
-          if (key === "description" && depth > 0) continue
-          // required arrays add constraint rules to the grammar; keep only at root
           if (key === "required" && depth > 0) continue
           if (key === "type" && value === "integer") {
             result[key] = "number"
             continue
           }
-          // large enum arrays explode grammar productions; collapse to base type
-          if (key === "enum" && Array.isArray(value) && value.length > 8) {
+          if (key === "enum" && Array.isArray(value)) {
             const first = value[0]
             result.type = typeof first === "number" ? "number" : "string"
             continue
           }
-          // properties container: recurse children at next depth (each child is a schema node)
           if (key === "properties" && isObj(value)) {
+            const entries = Object.entries(value)
+            if (entries.length > maxProps) {
+              result[key] = Object.fromEntries(
+                entries
+                  .slice(0, maxProps)
+                  .map(([pk, pv]) => [pk, isObj(pv) ? sanitizeXai(pv as Record<string, unknown>, depth + 1) : pv]),
+              )
+              continue
+            }
             const props: Record<string, unknown> = {}
-            for (const [pk, pv] of Object.entries(value)) {
+            for (const [pk, pv] of entries) {
               props[pk] = isObj(pv) ? sanitizeXai(pv as Record<string, unknown>, depth + 1) : pv
             }
             result[key] = props
@@ -1103,7 +1112,6 @@ export namespace ProviderTransform {
           if (Array.isArray(value)) {
             result[key] = value.map((item) => (isObj(item) ? sanitizeXai(item, depth + 1) : item))
           } else if (isObj(value)) {
-            // non-properties objects (e.g. items) increment depth
             result[key] = sanitizeXai(value, depth + 1)
           } else {
             result[key] = value

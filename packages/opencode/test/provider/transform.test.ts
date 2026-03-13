@@ -791,21 +791,25 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
     expect(result.properties.nested.required).toBeUndefined()
   })
 
-  test("collapses large enum arrays to base type", () => {
+  test("collapses all enum arrays to base type", () => {
     const schema = {
       type: "object",
       properties: {
         big: { type: "string", enum: ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"] },
         small: { type: "string", enum: ["x", "y", "z"] },
+        nums: { type: "number", enum: [1, 2, 3] },
       },
     } as any
     const result = ProviderTransform.schema(xai, schema) as any
     expect(result.properties.big.enum).toBeUndefined()
     expect(result.properties.big.type).toBe("string")
-    expect(result.properties.small.enum).toEqual(["x", "y", "z"])
+    expect(result.properties.small.enum).toBeUndefined()
+    expect(result.properties.small.type).toBe("string")
+    expect(result.properties.nums.enum).toBeUndefined()
+    expect(result.properties.nums.type).toBe("number")
   })
 
-  test("truncates objects beyond max depth", () => {
+  test("truncates objects beyond max depth of 3", () => {
     const schema = {
       type: "object",
       properties: {
@@ -818,12 +822,7 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
                 c: {
                   type: "object",
                   properties: {
-                    d: {
-                      type: "object",
-                      properties: {
-                        e: { type: "string" },
-                      },
-                    },
+                    d: { type: "string" },
                   },
                 },
               },
@@ -833,8 +832,8 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
       },
     } as any
     const result = ProviderTransform.schema(xai, schema) as any
-    const deep = result.properties.a.properties.b.properties.c.properties.d
-    expect(deep).toEqual({ type: "object" })
+    // depth 0 = root, 1 = a, 2 = b, 3 = truncated
+    expect(result.properties.a.properties.b.properties.c).toEqual({ type: "object" })
   })
 
   test("flattens allOf by merging sub-schemas", () => {
@@ -866,7 +865,7 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
     expect(result.properties.val.anyOf).toBeUndefined()
   })
 
-  test("strips nested descriptions but keeps root", () => {
+  test("strips all descriptions including root", () => {
     const schema = {
       type: "object",
       description: "Root description",
@@ -875,7 +874,7 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
       },
     } as any
     const result = ProviderTransform.schema(xai, schema) as any
-    expect(result.description).toBe("Root description")
+    expect(result.description).toBeUndefined()
     expect(result.properties.name.description).toBeUndefined()
   })
 
@@ -899,6 +898,76 @@ describe("ProviderTransform.schema - xAI sanitization", () => {
     const params = result.properties.tool_calls.items.properties.parameters
     expect(params.additionalProperties).toBeUndefined()
     expect(params.type).toBe("object")
+  })
+
+  test("collapses wide objects to first maxProps entries", () => {
+    const props: Record<string, unknown> = {}
+    for (let i = 0; i < 20; i++) props[`field${i}`] = { type: "string" }
+    const schema = { type: "object", properties: props } as any
+    const result = ProviderTransform.schema(xai, schema) as any
+    const keys = Object.keys(result.properties)
+    expect(keys.length).toBe(12)
+    expect(keys[0]).toBe("field0")
+    expect(keys[11]).toBe("field11")
+  })
+
+  test("handles complex MCP-like schema with deep nesting and unions", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        filter: {
+          allOf: [
+            {
+              type: "object",
+              properties: {
+                operator: { type: "string", enum: ["and", "or"] },
+                filters: {
+                  type: "array",
+                  items: {
+                    anyOf: [
+                      {
+                        type: "object",
+                        additionalProperties: true,
+                        properties: {
+                          property: { type: "string", description: "Property name" },
+                          filter: {
+                            type: "object",
+                            additionalProperties: true,
+                            properties: {
+                              operator: { type: "string", enum: ["date_is_within", "string_contains"] },
+                              value: {
+                                anyOf: [
+                                  { type: "string" },
+                                  { type: "object", properties: { start_date: { type: "string", format: "date" } } },
+                                ],
+                              },
+                            },
+                            required: ["operator"],
+                          },
+                        },
+                        required: ["property", "filter"],
+                      },
+                      { type: "null" },
+                    ],
+                  },
+                },
+              },
+              required: ["operator"],
+            },
+            { properties: { extra: { type: "boolean" } } },
+          ],
+        },
+      },
+    } as any
+    const result = ProviderTransform.schema(xai, schema) as any
+    expect(result.properties.filter.allOf).toBeUndefined()
+    expect(result.properties.filter.properties.operator.type).toBe("string")
+    expect(result.properties.filter.properties.operator.enum).toBeUndefined()
+    expect(result.properties.filter.properties.extra.type).toBe("boolean")
+    // depth 0=root, 1=filter, 2=filters, items array recurses at 3 → truncated
+    const filters = result.properties.filter.properties.filters
+    expect(filters.type).toBe("array")
+    expect(filters.items).toEqual({ type: "object" })
   })
 
   test("does not affect non-xai providers", () => {
