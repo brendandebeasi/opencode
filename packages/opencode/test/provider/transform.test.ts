@@ -721,6 +721,273 @@ describe("ProviderTransform.schema - gemini non-object properties removal", () =
   })
 })
 
+describe("ProviderTransform.schema - xAI sanitization", () => {
+  const xai = {
+    providerID: "xai",
+    api: { id: "grok-4", npm: "@ai-sdk/xai" },
+  } as any
+
+  test("strips numeric bounds and format keywords", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        count: { type: "integer", minimum: 1, maximum: 100 },
+        name: { type: "string", minLength: 1, maxLength: 255, format: "uri" },
+        tags: { type: "array", items: { type: "string" }, minItems: 0, maxItems: 50 },
+      },
+    } as any
+    const result = ProviderTransform.schema(xai, schema) as any
+    expect(result.properties.count.type).toBe("number")
+    expect(result.properties.count.minimum).toBeUndefined()
+    expect(result.properties.count.maximum).toBeUndefined()
+    expect(result.properties.name.minLength).toBeUndefined()
+    expect(result.properties.name.maxLength).toBeUndefined()
+    expect(result.properties.name.format).toBeUndefined()
+    expect(result.properties.tags.minItems).toBeUndefined()
+    expect(result.properties.tags.maxItems).toBeUndefined()
+  })
+
+  test("strips additionalProperties in all forms", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        params: {
+          type: "object",
+          additionalProperties: {},
+        },
+        meta: {
+          type: "object",
+          additionalProperties: true,
+        },
+        strict: {
+          type: "object",
+          additionalProperties: false,
+        },
+      },
+    } as any
+    const result = ProviderTransform.schema(xai, schema) as any
+    expect(result.properties.params.additionalProperties).toBeUndefined()
+    expect(result.properties.meta.additionalProperties).toBeUndefined()
+    expect(result.properties.strict.additionalProperties).toBeUndefined()
+  })
+
+  test("strips required arrays at all depths", () => {
+    const schema = {
+      type: "object",
+      required: ["name"],
+      properties: {
+        name: { type: "string" },
+        nested: {
+          type: "object",
+          required: ["id"],
+          properties: {
+            id: { type: "string" },
+          },
+        },
+      },
+    } as any
+    const result = ProviderTransform.schema(xai, schema) as any
+    expect(result.required).toBeUndefined()
+    expect(result.properties.nested.required).toBeUndefined()
+  })
+
+  test("collapses all enum arrays to base type", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        big: { type: "string", enum: ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"] },
+        small: { type: "string", enum: ["x", "y", "z"] },
+        nums: { type: "number", enum: [1, 2, 3] },
+      },
+    } as any
+    const result = ProviderTransform.schema(xai, schema) as any
+    expect(result.properties.big.enum).toBeUndefined()
+    expect(result.properties.big.type).toBe("string")
+    expect(result.properties.small.enum).toBeUndefined()
+    expect(result.properties.small.type).toBe("string")
+    expect(result.properties.nums.enum).toBeUndefined()
+    expect(result.properties.nums.type).toBe("number")
+  })
+
+  test("truncates objects beyond max depth of 2", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        a: {
+          type: "object",
+          properties: {
+            b: {
+              type: "object",
+              properties: {
+                c: {
+                  type: "object",
+                  properties: {
+                    d: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    } as any
+    const result = ProviderTransform.schema(xai, schema) as any
+    // depth 0 = root, 1 = a, 2 = truncated to bare type
+    expect(result.properties.a.properties.b).toEqual({ type: "object" })
+  })
+
+  test("flattens allOf by merging sub-schemas", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        item: {
+          allOf: [{ type: "object", properties: { a: { type: "string" } } }, { properties: { b: { type: "number" } } }],
+        },
+      },
+    } as any
+    const result = ProviderTransform.schema(xai, schema) as any
+    expect(result.properties.item.properties.a.type).toBe("string")
+    expect(result.properties.item.properties.b.type).toBe("number")
+    expect(result.properties.item.allOf).toBeUndefined()
+  })
+
+  test("collapses anyOf/oneOf to first non-null branch", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        val: {
+          anyOf: [{ type: "string" }, { type: "null" }],
+        },
+      },
+    } as any
+    const result = ProviderTransform.schema(xai, schema) as any
+    expect(result.properties.val.type).toBe("string")
+    expect(result.properties.val.anyOf).toBeUndefined()
+  })
+
+  test("strips all descriptions including root", () => {
+    const schema = {
+      type: "object",
+      description: "Root description",
+      properties: {
+        name: { type: "string", description: "Nested description" },
+      },
+    } as any
+    const result = ProviderTransform.schema(xai, schema) as any
+    expect(result.description).toBeUndefined()
+    expect(result.properties.name.description).toBeUndefined()
+  })
+
+  test("batch tool passthrough schema strips additionalProperties and simplifies deep items", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        tool_calls: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              tool: { type: "string" },
+              parameters: { type: "object", additionalProperties: {} },
+            },
+          },
+        },
+      },
+    } as any
+    const result = ProviderTransform.schema(xai, schema) as any
+    // tool_calls is at depth 1, so items becomes bare type
+    expect(result.properties.tool_calls.type).toBe("array")
+    expect(result.properties.tool_calls.items).toEqual({ type: "object" })
+  })
+
+  test("collapses wide objects to first maxProps entries", () => {
+    const props: Record<string, unknown> = {}
+    for (let i = 0; i < 20; i++) props[`field${i}`] = { type: "string" }
+    const schema = { type: "object", properties: props } as any
+    const result = ProviderTransform.schema(xai, schema) as any
+    const keys = Object.keys(result.properties)
+    expect(keys.length).toBe(6)
+    expect(keys[0]).toBe("field0")
+    expect(keys[5]).toBe("field5")
+  })
+
+  test("handles complex MCP-like schema with deep nesting and unions", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        filter: {
+          allOf: [
+            {
+              type: "object",
+              properties: {
+                operator: { type: "string", enum: ["and", "or"] },
+                filters: {
+                  type: "array",
+                  items: {
+                    anyOf: [
+                      {
+                        type: "object",
+                        additionalProperties: true,
+                        properties: {
+                          property: { type: "string", description: "Property name" },
+                          filter: {
+                            type: "object",
+                            additionalProperties: true,
+                            properties: {
+                              operator: { type: "string", enum: ["date_is_within", "string_contains"] },
+                              value: {
+                                anyOf: [
+                                  { type: "string" },
+                                  { type: "object", properties: { start_date: { type: "string", format: "date" } } },
+                                ],
+                              },
+                            },
+                            required: ["operator"],
+                          },
+                        },
+                        required: ["property", "filter"],
+                      },
+                      { type: "null" },
+                    ],
+                  },
+                },
+              },
+              required: ["operator"],
+            },
+            { properties: { extra: { type: "boolean" } } },
+          ],
+        },
+      },
+    } as any
+    const result = ProviderTransform.schema(xai, schema) as any
+    expect(result.properties.filter.allOf).toBeUndefined()
+    expect(result.properties.filter.properties.operator.type).toBe("string")
+    expect(result.properties.filter.properties.operator.enum).toBeUndefined()
+    expect(result.properties.filter.properties.extra.type).toBe("boolean")
+    // depth 0=root, 1=filter — filters enters sanitizeXai at depth 2, hits maxDepth → bare type
+    const filters = result.properties.filter.properties.filters
+    expect(filters).toEqual({ type: "array" })
+  })
+
+  test("does not affect non-xai providers", () => {
+    const openai = {
+      providerID: "openai",
+      api: { id: "gpt-4" },
+    } as any
+    const schema = {
+      type: "object",
+      properties: {
+        count: { type: "integer", minimum: 1 },
+        data: { type: "object", additionalProperties: {} },
+      },
+    } as any
+    const result = ProviderTransform.schema(openai, schema) as any
+    expect(result.properties.count.type).toBe("integer")
+    expect(result.properties.count.minimum).toBe(1)
+    expect(result.properties.data.additionalProperties).toBeDefined()
+  })
+})
+
 describe("ProviderTransform.message - DeepSeek reasoning content", () => {
   test("DeepSeek with tool calls includes reasoning_content in providerOptions", () => {
     const msgs = [
