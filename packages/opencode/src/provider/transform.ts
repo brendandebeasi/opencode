@@ -1007,6 +1007,113 @@ export namespace ProviderTransform {
       schema = sanitizeGemini(schema)
     }
 
+    // xAI grammar compiler rejects several JSON Schema keywords that Zod v4 emits
+    // and has a hard limit on combined grammar complexity across all tools.
+    // ref: github.com/zed-industries/zed/pull/33593, github.com/vercel/ai/issues/8024
+    if (model.api.npm === "@ai-sdk/xai" || model.id?.toLowerCase().includes("grok")) {
+      const strip = new Set([
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "minContains",
+        "maxContains",
+        "format",
+        "$schema",
+        "default",
+        "examples",
+        "title",
+        "pattern",
+        "patternProperties",
+        "uniqueItems",
+        "const",
+        "$comment",
+        "contentEncoding",
+        "contentMediaType",
+        "if",
+        "then",
+        "else",
+        "dependentRequired",
+        "dependentSchemas",
+      ])
+      const isObj = (v: unknown): v is Record<string, unknown> =>
+        typeof v === "object" && v !== null && !Array.isArray(v)
+
+      const flatten = (node: Record<string, unknown>): Record<string, unknown> => {
+        if (Array.isArray(node.allOf)) {
+          const { allOf: branches, ...rest } = node
+          let merged = { ...rest }
+          for (const branch of branches as unknown[]) {
+            if (!isObj(branch)) continue
+            const prev = merged.properties
+            merged = { ...merged, ...branch }
+            if (isObj(prev) && isObj(branch.properties))
+              merged.properties = { ...prev, ...(branch.properties as Record<string, unknown>) }
+          }
+          return merged
+        }
+        // anyOf/oneOf: collapse to first non-null branch
+        for (const combiner of ["anyOf", "oneOf"] as const) {
+          const branches = node[combiner]
+          if (!Array.isArray(branches)) continue
+          const real = branches.filter((b) => !(isObj(b) && Object.keys(b).length === 1 && b.type === "null"))
+          if (real.length >= 1 && isObj(real[0])) {
+            const { [combiner]: _, ...rest } = node
+            return { ...rest, ...real[0] }
+          }
+        }
+        return node
+      }
+
+      const maxDepth = 4
+      const sanitizeXai = (node: Record<string, unknown>, depth = 0): Record<string, unknown> => {
+        if (depth >= maxDepth && node.type === "object") return { type: "object" }
+        const flat = flatten(node)
+        const result: Record<string, unknown> = {}
+        for (const [key, value] of Object.entries(flat)) {
+          if (strip.has(key)) continue
+          // additionalProperties in any form creates unbounded BNF grammar rules
+          if (key === "additionalProperties") continue
+          if (key === "description" && depth > 0) continue
+          // required arrays add constraint rules to the grammar; keep only at root
+          if (key === "required" && depth > 0) continue
+          if (key === "type" && value === "integer") {
+            result[key] = "number"
+            continue
+          }
+          // large enum arrays explode grammar productions; collapse to base type
+          if (key === "enum" && Array.isArray(value) && value.length > 8) {
+            const first = value[0]
+            result.type = typeof first === "number" ? "number" : "string"
+            continue
+          }
+          // properties container: recurse children at next depth (each child is a schema node)
+          if (key === "properties" && isObj(value)) {
+            const props: Record<string, unknown> = {}
+            for (const [pk, pv] of Object.entries(value)) {
+              props[pk] = isObj(pv) ? sanitizeXai(pv as Record<string, unknown>, depth + 1) : pv
+            }
+            result[key] = props
+            continue
+          }
+          if (Array.isArray(value)) {
+            result[key] = value.map((item) => (isObj(item) ? sanitizeXai(item, depth + 1) : item))
+          } else if (isObj(value)) {
+            // non-properties objects (e.g. items) increment depth
+            result[key] = sanitizeXai(value, depth + 1)
+          } else {
+            result[key] = value
+          }
+        }
+        return result
+      }
+      schema = sanitizeXai(schema as Record<string, unknown>) as JSONSchema7
+    }
+
     return schema as JSONSchema7
   }
 }
