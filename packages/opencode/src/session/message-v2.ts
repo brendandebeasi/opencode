@@ -1,8 +1,8 @@
 import { BusEvent } from "@/bus/bus-event"
+import { SessionID, MessageID, PartID } from "./schema"
 import z from "zod"
 import { NamedError } from "@opencode-ai/util/error"
 import { APICallError, convertToModelMessages, LoadAPIKeyError, type ModelMessage, type UIMessage } from "ai"
-import { Identifier } from "../id/id"
 import { LSP } from "../lsp"
 import { Snapshot } from "@/snapshot"
 import { fn } from "@/util/fn"
@@ -17,6 +17,10 @@ import { type SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
 
 export namespace MessageV2 {
+  export function isMedia(mime: string) {
+    return mime.startsWith("image/") || mime === "application/pdf"
+  }
+
   export const OutputLengthError = NamedError.create("MessageOutputLengthError", z.object({}))
   export const AbortedError = NamedError.create("MessageAbortedError", z.object({ message: z.string() }))
   export const StructuredOutputError = NamedError.create(
@@ -74,9 +78,9 @@ export namespace MessageV2 {
   export type OutputFormat = z.infer<typeof Format>
 
   const PartBase = z.object({
-    id: z.string(),
-    sessionID: z.string(),
-    messageID: z.string(),
+    id: PartID.zod,
+    sessionID: SessionID.zod,
+    messageID: MessageID.zod,
   })
 
   export const SnapshotPart = PartBase.extend({
@@ -196,6 +200,7 @@ export namespace MessageV2 {
   export const CompactionPart = PartBase.extend({
     type: z.literal("compaction"),
     auto: z.boolean(),
+    overflow: z.boolean().optional(),
   }).meta({
     ref: "CompactionPart",
   })
@@ -338,8 +343,8 @@ export namespace MessageV2 {
   export type ToolPart = z.infer<typeof ToolPart>
 
   const Base = z.object({
-    id: z.string(),
-    sessionID: z.string(),
+    id: MessageID.zod,
+    sessionID: SessionID.zod,
   })
 
   export const User = Base.extend({
@@ -405,7 +410,7 @@ export namespace MessageV2 {
         APIError.Schema,
       ])
       .optional(),
-    parentID: z.string(),
+    parentID: MessageID.zod,
     modelID: z.string(),
     providerID: z.string(),
     /**
@@ -452,8 +457,8 @@ export namespace MessageV2 {
     Removed: BusEvent.define(
       "message.removed",
       z.object({
-        sessionID: z.string(),
-        messageID: z.string(),
+        sessionID: SessionID.zod,
+        messageID: MessageID.zod,
       }),
     ),
     PartUpdated: BusEvent.define(
@@ -465,9 +470,9 @@ export namespace MessageV2 {
     PartDelta: BusEvent.define(
       "message.part.delta",
       z.object({
-        sessionID: z.string(),
-        messageID: z.string(),
-        partID: z.string(),
+        sessionID: SessionID.zod,
+        messageID: MessageID.zod,
+        partID: PartID.zod,
         field: z.string(),
         delta: z.string(),
       }),
@@ -475,9 +480,9 @@ export namespace MessageV2 {
     PartRemoved: BusEvent.define(
       "message.part.removed",
       z.object({
-        sessionID: z.string(),
-        messageID: z.string(),
-        partID: z.string(),
+        sessionID: SessionID.zod,
+        messageID: MessageID.zod,
+        partID: PartID.zod,
       }),
     ),
   }
@@ -488,7 +493,11 @@ export namespace MessageV2 {
   })
   export type WithParts = z.infer<typeof WithParts>
 
-  export function toModelMessages(input: WithParts[], model: Provider.Model): ModelMessage[] {
+  export function toModelMessages(
+    input: WithParts[],
+    model: Provider.Model,
+    options?: { stripMedia?: boolean },
+  ): ModelMessage[] {
     const result: UIMessage[] = []
     const toolNames = new Set<string>()
     // Track media from tool results that need to be injected as user messages
@@ -562,13 +571,21 @@ export namespace MessageV2 {
               text: part.text,
             })
           // text/plain and directory files are converted into text parts, ignore them
-          if (part.type === "file" && part.mime !== "text/plain" && part.mime !== "application/x-directory")
-            userMessage.parts.push({
-              type: "file",
-              url: part.url,
-              mediaType: part.mime,
-              filename: part.filename,
-            })
+          if (part.type === "file" && part.mime !== "text/plain" && part.mime !== "application/x-directory") {
+            if (options?.stripMedia && isMedia(part.mime)) {
+              userMessage.parts.push({
+                type: "text",
+                text: `[Attached ${part.mime}: ${part.filename ?? "file"}]`,
+              })
+            } else {
+              userMessage.parts.push({
+                type: "file",
+                url: part.url,
+                mediaType: part.mime,
+                filename: part.filename,
+              })
+            }
+          }
 
           if (part.type === "compaction") {
             userMessage.parts.push({
@@ -618,14 +635,12 @@ export namespace MessageV2 {
             toolNames.add(part.tool)
             if (part.state.status === "completed") {
               const outputText = part.state.time.compacted ? "[Old tool result content cleared]" : part.state.output
-              const attachments = part.state.time.compacted ? [] : (part.state.attachments ?? [])
+              const attachments = part.state.time.compacted || options?.stripMedia ? [] : (part.state.attachments ?? [])
 
               // For providers that don't support media in tool results, extract media files
               // (images, PDFs) to be sent as a separate user message
-              const isMediaAttachment = (a: { mime: string }) =>
-                a.mime.startsWith("image/") || a.mime === "application/pdf"
-              const mediaAttachments = attachments.filter(isMediaAttachment)
-              const nonMediaAttachments = attachments.filter((a) => !isMediaAttachment(a))
+              const mediaAttachments = attachments.filter((a) => isMedia(a.mime))
+              const nonMediaAttachments = attachments.filter((a) => !isMedia(a.mime))
               if (!supportsMediaInToolResults && mediaAttachments.length > 0) {
                 media.push(...mediaAttachments)
               }
@@ -683,7 +698,7 @@ export namespace MessageV2 {
           // media (images, PDFs) in tool results
           if (media.length > 0) {
             result.push({
-              id: Identifier.ascending("message"),
+              id: MessageID.ascending(),
               role: "user",
               parts: [
                 {
@@ -713,7 +728,7 @@ export namespace MessageV2 {
     )
   }
 
-  export const stream = fn(Identifier.schema("session"), async function* (sessionID) {
+  export const stream = fn(SessionID.zod, async function* (sessionID) {
     const size = 50
     let offset = 0
     while (true) {
@@ -766,7 +781,7 @@ export namespace MessageV2 {
     }
   })
 
-  export const parts = fn(Identifier.schema("message"), async (message_id) => {
+  export const parts = fn(MessageID.zod, async (message_id) => {
     const rows = Database.use((db) =>
       db.select().from(PartTable).where(eq(PartTable.message_id, message_id)).orderBy(PartTable.id).all(),
     )
@@ -777,8 +792,8 @@ export namespace MessageV2 {
 
   export const get = fn(
     z.object({
-      sessionID: Identifier.schema("session"),
-      messageID: Identifier.schema("message"),
+      sessionID: SessionID.zod,
+      messageID: MessageID.zod,
     }),
     async (input): Promise<WithParts> => {
       const row = Database.use((db) => db.select().from(MessageTable).where(eq(MessageTable.id, input.messageID)).get())
@@ -802,7 +817,8 @@ export namespace MessageV2 {
         msg.parts.some((part) => part.type === "compaction")
       )
         break
-      if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish) completed.add(msg.info.parentID)
+      if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish && !msg.info.error)
+        completed.add(msg.info.parentID)
     }
     result.reverse()
     return result
