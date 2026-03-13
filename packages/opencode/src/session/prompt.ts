@@ -47,6 +47,7 @@ import { LLM } from "./llm"
 import { iife } from "@/util/iife"
 import { Shell } from "@/shell/shell"
 import { Truncate } from "@/tool/truncation"
+import { stale, reap } from "@/tool/bash"
 import { decodeDataUrl } from "@/util/data-url"
 import { Todo } from "./todo"
 
@@ -266,6 +267,11 @@ export namespace SessionPrompt {
       return
     }
     match.abort.abort()
+    // Reject any pending callbacks to prevent promise/closure leaks
+    for (const cb of match.callbacks) {
+      cb.reject(new Error("Session cancelled"))
+    }
+    match.callbacks.length = 0
     delete s[sessionID]
     SessionStatus.set(sessionID, { type: "idle" }, metadata)
     return
@@ -288,6 +294,13 @@ export namespace SessionPrompt {
 
     let lastAssistantData: { agent?: string; modelID?: string } = {}
     using _ = defer(() => cancel(sessionID, lastAssistantData))
+
+    const watchdog = setInterval(() => {
+      for (const id of stale()) {
+        reap(id)
+      }
+    }, 5000)
+    using _watchdog = defer(() => clearInterval(watchdog))
 
     // Structured output state
     // Note: On session resumption, state is reset but outputFormat is preserved

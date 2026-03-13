@@ -100,6 +100,15 @@ export namespace Bus {
       const index = match.indexOf(callback)
       if (index === -1) return
       match.splice(index, 1)
+      if (match.length === 0) subscriptions.delete(type)
     }
+  }
+
+  export function debug() {
+    const counts: Record<string, number> = {}
+    for (const [type, subs] of state().subscriptions) {
+      counts[type] = subs.length
+    }
+    return { subscriptions: counts }
   }
 }

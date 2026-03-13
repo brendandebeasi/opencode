@@ -161,6 +161,20 @@ export namespace Question {
     }
   }
 
+  export async function clearSession(sessionID: string) {
+    const s = await state()
+    for (const [id, pending] of s.pending.entries()) {
+      if (pending.info.sessionID === sessionID) {
+        s.pending.delete(id)
+        Bus.publish(Event.Rejected, {
+          sessionID: pending.info.sessionID,
+          requestID: pending.info.id,
+        })
+        pending.reject(new RejectedError())
+      }
+    }
+  }
+
   export async function list() {
     return state().then((x) => Array.from(x.pending.values(), (x) => x.info))
   }

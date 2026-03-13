@@ -7,6 +7,7 @@ import {
   For,
   Match,
   on,
+  onCleanup,
   onMount,
   Show,
   Switch,
@@ -217,7 +218,7 @@ export function Session() {
   })
 
   let lastSwitch: string | undefined = undefined
-  sdk.event.on("message.part.updated", (evt) => {
+  const unsubPartUpdated = sdk.event.on("message.part.updated", (evt) => {
     const part = evt.properties.part
     if (part.type !== "tool") return
     if (part.sessionID !== route.sessionID) return
@@ -232,6 +233,7 @@ export function Session() {
       lastSwitch = part.id
     }
   })
+  onCleanup(unsubPartUpdated)
 
   let scroll: ScrollBoxRenderable
   let prompt: PromptRef
