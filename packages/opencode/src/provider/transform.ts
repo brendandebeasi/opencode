@@ -1044,12 +1044,15 @@ export namespace ProviderTransform {
         typeof v === "object" && v !== null && !Array.isArray(v)
 
       const flatten = (node: Record<string, unknown>): Record<string, unknown> => {
-        // allOf: merge all sub-schemas into one (lossy)
         if (Array.isArray(node.allOf)) {
           const { allOf: branches, ...rest } = node
           let merged = { ...rest }
           for (const branch of branches as unknown[]) {
-            if (isObj(branch)) merged = { ...merged, ...branch }
+            if (!isObj(branch)) continue
+            const prev = merged.properties
+            merged = { ...merged, ...branch }
+            if (isObj(prev) && isObj(branch.properties))
+              merged.properties = { ...prev, ...(branch.properties as Record<string, unknown>) }
           }
           return merged
         }
@@ -1066,20 +1069,41 @@ export namespace ProviderTransform {
         return node
       }
 
+      const maxDepth = 4
       const sanitizeXai = (node: Record<string, unknown>, depth = 0): Record<string, unknown> => {
+        if (depth >= maxDepth && node.type === "object") return { type: "object" }
         const flat = flatten(node)
         const result: Record<string, unknown> = {}
         for (const [key, value] of Object.entries(flat)) {
           if (strip.has(key)) continue
-          if (key === "additionalProperties" && typeof value === "boolean") continue
+          // additionalProperties in any form creates unbounded BNF grammar rules
+          if (key === "additionalProperties") continue
           if (key === "description" && depth > 0) continue
+          // required arrays add constraint rules to the grammar; keep only at root
+          if (key === "required" && depth > 0) continue
           if (key === "type" && value === "integer") {
             result[key] = "number"
+            continue
+          }
+          // large enum arrays explode grammar productions; collapse to base type
+          if (key === "enum" && Array.isArray(value) && value.length > 8) {
+            const first = value[0]
+            result.type = typeof first === "number" ? "number" : "string"
+            continue
+          }
+          // properties container: recurse children at next depth (each child is a schema node)
+          if (key === "properties" && isObj(value)) {
+            const props: Record<string, unknown> = {}
+            for (const [pk, pv] of Object.entries(value)) {
+              props[pk] = isObj(pv) ? sanitizeXai(pv as Record<string, unknown>, depth + 1) : pv
+            }
+            result[key] = props
             continue
           }
           if (Array.isArray(value)) {
             result[key] = value.map((item) => (isObj(item) ? sanitizeXai(item, depth + 1) : item))
           } else if (isObj(value)) {
+            // non-properties objects (e.g. items) increment depth
             result[key] = sanitizeXai(value, depth + 1)
           } else {
             result[key] = value
