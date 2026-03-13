@@ -47,6 +47,7 @@ import { LLM } from "./llm"
 import { iife } from "@/util/iife"
 import { Shell } from "@/shell/shell"
 import { Truncate } from "@/tool/truncation"
+import { decodeDataUrl } from "@/util/data-url"
 import { Todo } from "./todo"
 
 // @ts-ignore
@@ -426,14 +427,14 @@ export namespace SessionPrompt {
           extra: { bypassAgentCheck: true },
           messages: msgs,
           async metadata(input) {
-            await Session.updatePart({
+            part = (await Session.updatePart({
               ...part,
               type: "tool",
               state: {
                 ...part.state,
                 ...input,
               },
-            } satisfies MessageV2.ToolPart)
+            } satisfies MessageV2.ToolPart)) as MessageV2.ToolPart
           },
           async ask(req) {
             await PermissionNext.ask({
@@ -494,7 +495,7 @@ export namespace SessionPrompt {
                 start: part.state.status === "running" ? part.state.time.start : Date.now(),
                 end: Date.now(),
               },
-              metadata: part.metadata,
+              metadata: "metadata" in part.state ? part.state.metadata : undefined,
               input: part.state.input,
             },
           } satisfies MessageV2.ToolPart)
@@ -1080,7 +1081,7 @@ export namespace SessionPrompt {
                     sessionID: input.sessionID,
                     type: "text",
                     synthetic: true,
-                    text: Buffer.from(part.url, "base64url").toString(),
+                    text: decodeDataUrl(part.url),
                   },
                   {
                     ...part,
