@@ -186,7 +186,11 @@ export namespace LLM {
     }
 
     const all = Object.keys(tools).filter((x) => x !== "invalid")
-    const cap = input.model.limit.tools
+    const cap = (() => {
+      const value = (input.model.limit as Record<string, unknown>)["tools"]
+      if (typeof value === "number") return value
+      return undefined
+    })()
     let active = all
     if (cap && all.length > cap) {
       l.warn("capping tools", {
@@ -249,7 +253,6 @@ export namespace LLM {
       if (tools["_noop"] && active.length > 0) keep.add("_noop")
       finalTools = Object.fromEntries(Object.entries(tools).filter(([id]) => keep.has(id)))
     }
-
     return streamText({
       onError(error) {
         l.error("stream error", {
